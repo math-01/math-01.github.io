@@ -1,281 +1,169 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OCR Live - OpenCV.js + Tesseract.js (Front-end)</title>
+  <title>OCR Mobile Avançado</title>
   <style>
-    body{font-family:Arial,Helvetica,sans-serif;display:flex;gap:16px;padding:12px}
-    .col{display:flex;flex-direction:column;gap:8px}
-    video, canvas{border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.12)}
-    #videoPreview{max-width:560px;width:100%;height:auto}
-    #overlay{position:absolute;pointer-events:none}
-    #controls{display:flex;gap:8px;align-items:center}
-    #result{white-space:pre-wrap;background:#111;color:#0f0;padding:8px;border-radius:6px;min-width:320px}
-    .status{font-size:13px;color:#444}
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      height: 100vh;
+    }
+    #container {
+      width: 100%;
+      max-width: 480px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    video {
+      width: 100%;
+      border-radius: 12px;
+      background: black;
+    }
+    canvas {
+      display: none;
+    }
+    #output {
+      background: #222;
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 16px;
+      min-height: 80px;
+      white-space: pre-wrap;
+    }
+    #status {
+      font-size: 14px;
+      opacity: 0.7;
+    }
+    button {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 10px;
+      background: #00aaff;
+      color: white;
+      font-size: 18px;
+    }
   </style>
 </head>
 <body>
-  <div class="col">
-    <div style="position:relative;display:inline-block">
-      <video id="videoPreview" autoplay muted playsinline></video>
-      <canvas id="drawCanvas" style="position:absolute;left:0;top:0;" ></canvas>
-    </div>
+  <div id="container">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
 
-    <div id="controls">
-      <label class="status">OCR contínuo ativado — processando quadro a cada <span id="intervalMs">800</span> ms</label>
-      <button id="btnToggle">Pausar</button>
-      <label class="status">Modelo de idioma:</label>
-      <select id="langSelect"><option value="por">por</option><option value="eng">eng</option></select>
-    </div>
+    <button id="toggle">Pausar OCR</button>
+    <div id="status">Iniciando...</div>
+    <div id="output"></div>
   </div>
 
-  <div class="col">
-    <div><strong>Texto reconhecido (último):</strong></div>
-    <div id="result">—</div>
-    <div style="height:8px"></div>
-    <div><strong>Logs / Confiança:</strong></div>
-    <div id="log" class="status">Carregando...</div>
-    <div style="height:12px"></div>
-    <div style="font-size:12px;color:#666;max-width:420px">
-      Observações: rode este arquivo em <strong>localhost</strong> ou via <strong>HTTPS</strong> (o acesso à câmera exige isso). O pipeline usa <em>OpenCV.js</em> para pré-processamento e <em>Tesseract.js</em> (worker) para OCR. Ajuste o intervalo se precisar de performance.
-    </div>
-  </div>
-
-  <!-- CDNs -->
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
-  <script async src="https://docs.opencv.org/master/opencv.js" onload="cv['onRuntimeInitialized']=onOpenCvReady"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvReady()"></script>
 
   <script>
-  // Configurações
-  const PROCESS_INTERVAL_MS = 800; // padrão (modificável pelo usuário)
-  const UPSCALE_FACTOR = 2.2;      // aumentar para textos pequenos
-  const ADAPTIVE_BLOCKSIZE = 11;   // para adaptive threshold (deve ser ímpar)
-  const ADAPTIVE_C = 8;
+    let running = true;
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const output = document.getElementById("output");
+    const statusEl = document.getElementById("status");
 
-  // Elementos
-  const video = document.getElementById('videoPreview');
-  const drawCanvas = document.getElementById('drawCanvas');
-  const ctx = drawCanvas.getContext('2d');
-  const resultEl = document.getElementById('result');
-  const logEl = document.getElementById('log');
-  const btnToggle = document.getElementById('btnToggle');
-  const intervalMsEl = document.getElementById('intervalMs');
-  const langSelect = document.getElementById('langSelect');
+    document.getElementById("toggle").onclick = () => {
+      running = !running;
+      document.getElementById("toggle").innerText = running ? "Pausar OCR" : "Retomar OCR";
+    };
 
-  let processing = true;
-  let lastProcess = 0;
-  let tesseractWorker = null;
-  let openCvReady = false;
-
-  intervalMsEl.textContent = PROCESS_INTERVAL_MS;
-
-  btnToggle.onclick = () => { processing = !processing; btnToggle.textContent = processing ? 'Pausar' : 'Retomar'; };
-
-  // Inicializa câmera
-  async function startCamera(){
-    try{
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "environment",
+          width: { ideal: 720 },
+          height: { ideal: 480 }
+        }
+      });
       video.srcObject = stream;
-      await video.play();
-      // ajusta canvas ao vídeo
-      drawCanvas.width = video.videoWidth;
-      drawCanvas.height = video.videoHeight;
-      drawCanvas.style.width = video.clientWidth + 'px';
-      drawCanvas.style.height = video.clientHeight + 'px';
-      requestAnimationFrame(loopPreview);
-    } catch(e){
-      logEl.textContent = 'Erro ao acessar câmera: ' + e.message;
-      console.error(e);
     }
-  }
 
-  // Loop de preview (renderiza retângulos e dispara OCR periodicamente)
-  function loopPreview(){
-    // apenas desenha o vídeo no canvas por cima para anotações
-    ctx.clearRect(0,0,drawCanvas.width, drawCanvas.height);
-    ctx.drawImage(video, 0, 0, drawCanvas.width, drawCanvas.height);
-
-    const now = performance.now();
-    if(processing && openCvReady && now - lastProcess > PROCESS_INTERVAL_MS){
-      lastProcess = now;
-      processFrameForOCR();
-    }
-    requestAnimationFrame(loopPreview);
-  }
-
-  // Pré-processamento com OpenCV.js e envio ao Tesseract
-  async function processFrameForOCR(){
-    try{
-      // captura frame em um canvas temporário
-      const tmpCanvas = document.createElement('canvas');
-      tmpCanvas.width = video.videoWidth;
-      tmpCanvas.height = video.videoHeight;
-      const tmpCtx = tmpCanvas.getContext('2d');
-      tmpCtx.drawImage(video,0,0,tmpCanvas.width,tmpCanvas.height);
-
-      // ROI (opcional) - aqui usamos toda a imagem; você pode ajustar
-      const imgDataURL = tmpCanvas.toDataURL('image/png');
-
-      // converte para cv.Mat
-      let src = cv.imread(tmpCanvas);
-      // upsample para ajudar OCR de texto pequeno
-      let up = new cv.Mat();
-      cv.resize(src, up, new cv.Size(0,0), UPSCALE_FACTOR, UPSCALE_FACTOR, cv.INTER_CUBIC);
-
-      // grayscale
-      let gray = new cv.Mat();
-      cv.cvtColor(up, gray, cv.COLOR_RGBA2GRAY, 0);
-
-      // suaviza para reduzir ruído
-      let blurred = new cv.Mat();
-      cv.GaussianBlur(gray, blurred, new cv.Size(3,3), 0);
-
-      // Binarização adaptativa
-      let bw = new cv.Mat();
-      cv.adaptiveThreshold(blurred, bw, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, ADAPTIVE_BLOCKSIZE, ADAPTIVE_C);
-
-      // Tentativa simples de deskew: calcula ângulo via moments e rotaciona
-      let angle = estimateSkewAngle(bw);
-      if(Math.abs(angle) > 0.2){
-        let rotated = rotateMat(bw, angle);
-        bw.delete();
-        bw = rotated;
-      }
-
-      // Podemos aplicar morfologia para realçar texto
-      let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2,2));
-      cv.morphologyEx(bw, bw, cv.MORPH_CLOSE, kernel);
-
-      // converte de volta pra canvas e manda pro tesseract
-      const outCanvas = document.createElement('canvas');
-      outCanvas.width = bw.cols;
-      outCanvas.height = bw.rows;
-      cv.imshow(outCanvas, bw);
-      const dataUrl = outCanvas.toDataURL('image/png');
-
-      // desenha borda no preview para visual feedback
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(255,0,0,0.6)';
-      ctx.strokeRect(4,4,drawCanvas.width-8, drawCanvas.height-8);
-
-      // Envia para Tesseract (worker)
-      await doOCR(dataUrl);
-
-      // liberar mats
-      src.delete(); up.delete(); gray.delete(); blurred.delete(); bw.delete(); kernel.delete();
-
-    } catch(e){
-      console.error('processFrameForOCR erro', e);
-      logEl.textContent = 'Erro no processamento: ' + e.message;
-    }
-  }
-
-  // Estima ângulo de inclinação simples via Hough ou moments (aqui moments)
-  function estimateSkewAngle(mat){
-    try{
-      // encontra contornos e calcula momento médio orientado
+    function detectROI(grayMat) {
+      let edges = new cv.Mat();
+      cv.Canny(grayMat, edges, 60, 120);
       let contours = new cv.MatVector();
       let hierarchy = new cv.Mat();
-      cv.findContours(mat, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-      let angles = [];
-      for(let i=0;i<contours.size();i++){
-        const cnt = contours.get(i);
-        if(cv.contourArea(cnt) < 100) { cnt.delete(); continue; }
-        const rotated = cv.minAreaRect(cnt);
-        let a = rotated.angle;
-        // ajustar range
-        if(a < -45) a = 90 + a;
-        angles.push(a);
-        cnt.delete();
+      cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      let bestRect = null;
+      for (let i = 0; i < contours.size(); i++) {
+        let cnt = contours.get(i);
+        let rect = cv.boundingRect(cnt);
+        if (rect.width > grayMat.cols * 0.3 && rect.height > 40) {
+          bestRect = rect;
+        }
       }
-      hierarchy.delete(); contours.delete();
-      if(angles.length === 0) return 0;
-      // retorna mediana para robustez
-      angles.sort((a,b)=>a-b);
-      return angles[Math.floor(angles.length/2)];
-    } catch(err){
-      console.warn('estimateSkewAngle falhou', err);
-      return 0;
+      edges.delete(); contours.delete(); hierarchy.delete();
+      return bestRect;
     }
-  }
 
-  function rotateMat(srcMat, angle){
-    const center = new cv.Point(srcMat.cols/2, srcMat.rows/2);
-    const M = cv.getRotationMatrix2D(center, angle, 1);
-    const dst = new cv.Mat();
-    const dsize = new cv.Size(srcMat.cols, srcMat.rows);
-    cv.warpAffine(srcMat, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255,255,255,255));
-    M.delete();
-    return dst;
-  }
+    function preprocess(src) {
+      let gray = new cv.Mat();
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+      let roiRect = detectROI(gray) || {x:0, y:0, width:gray.cols, height:gray.rows};
+      let roi = gray.roi(roiRect);
 
-  // Inicializa worker Tesseract.js
-  async function initTesseract(){
-    logEl.textContent = 'Iniciando Tesseract worker...';
-    tesseractWorker = Tesseract.createWorker({
-      logger: m => {
-        // mostra progresso onde faz sentido
-        if(m.status) logEl.textContent = m.status + ' ' + (m.progress ? Math.round(m.progress*100)+'%' : '');
-      }
-    });
-    await tesseractWorker.load();
-    const lang = langSelect.value || 'por';
-    await tesseractWorker.loadLanguage(lang);
-    await tesseractWorker.initialize(lang);
-    // configurações úteis
-    await tesseractWorker.setParameters({
-      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
-      preserve_interword_spaces: '1'
-    });
-    logEl.textContent = 'Tesseract pronto (' + lang + ')';
-  }
+      let blur = new cv.Mat();
+      cv.GaussianBlur(roi, blur, new cv.Size(3,3), 0);
+      let th = new cv.Mat();
+      cv.adaptiveThreshold(blur, th, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 35, 8);
 
-  // Executa OCR e atualiza UI
-  let lastText = '';
-  async function doOCR(dataUrl){
-    if(!tesseractWorker) return;
-    try{
-      const { data } = await tesseractWorker.recognize(dataUrl, {});
-      const text = (data && data.text) ? data.text.trim() : '';
-      const conf = (data && data.confidence) ? Math.round(data.confidence) : 'n/a';
-      if(text && text.length > 0 && text !== lastText){
-        lastText = text;
-        resultEl.textContent = text;
-      }
-      logEl.textContent = 'Confiança média: ' + conf;
-    } catch(e){
-      console.warn('doOCR erro', e);
+      let kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2,2));
+      let closed = new cv.Mat();
+      cv.morphologyEx(th, closed, cv.MORPH_CLOSE, kernel);
+
+      gray.delete(); blur.delete(); th.delete(); kernel.delete();
+      return closed;
     }
-  }
 
-  // OpenCV ready
-  function onOpenCvReady(){
-    openCvReady = true;
-    logEl.textContent = 'OpenCV pronto';
-    // start camera & tesseract
-    startCamera();
-    initTesseract();
-  }
+    async function processFrame(worker) {
+      if (!running) return requestAnimationFrame(() => processFrame(worker));
+      if (video.readyState !== 4) return requestAnimationFrame(() => processFrame(worker));
 
-  // troca de idioma em tempo real
-  langSelect.onchange = async () => {
-    if(!tesseractWorker) return;
-    const newLang = langSelect.value;
-    logEl.textContent = 'Carregando idioma ' + newLang + '...';
-    await tesseractWorker.loadLanguage(newLang);
-    await tesseractWorker.initialize(newLang);
-    logEl.textContent = 'Idioma alterado para ' + newLang;
-  };
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
 
-  // Ao sair / fechar: liberar resources
-  window.addEventListener('beforeunload', async ()=>{
-    try{ if(tesseractWorker) await tesseractWorker.terminate(); }catch(e){}
-    const tracks = video.srcObject && video.srcObject.getTracks ? video.srcObject.getTracks() : [];
-    tracks.forEach(t=>t.stop());
-  });
+      let src = cv.imread(canvas);
+      let processed = preprocess(src);
 
-  // notas de performance: considere aumentar interval se travar
+      const data = new Uint8ClampedArray(processed.data);
+      const imgData = new ImageData(data, processed.cols, processed.rows);
+      ctx.putImageData(imgData, 0, 0);
+
+      const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
+      worker.recognize(blob).then(({data}) => {
+        output.innerText = data.text.trim();
+        statusEl.innerText = "Confiança: " + Math.round(data.confidence) + "%";
+      });
+
+      src.delete(); processed.delete();
+      requestAnimationFrame(() => processFrame(worker));
+    }
+
+    async function onOpenCvReady() {
+      statusEl.innerText = "Carregando OCR avançado...";
+      const worker = await Tesseract.createWorker("por", 1, {
+        logger: m => statusEl.innerText = m.status || "Processando..."
+      });
+
+      await startCamera();
+      requestAnimationFrame(() => processFrame(worker));
+    }
   </script>
 </body>
 </html>
